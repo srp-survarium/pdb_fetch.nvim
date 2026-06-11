@@ -7,6 +7,7 @@ local uv = vim.uv or vim.loop
 
 M.config = {
   keymaps = true, -- vbs/vts (structure), vbf/vtf (function asm), V (stmt peek)
+  split = "botright vsplit", -- where view windows open
 }
 
 local INDEX = { base = "binaries/rich/base/index.jsonl",
@@ -215,7 +216,7 @@ local function show_split(lines, ctx)
   if win then
     vim.api.nvim_set_current_win(win)
   else
-    vim.cmd("botright split")
+    vim.cmd(M.config.split)
     vim.api.nvim_win_set_buf(0, buf)
   end
   if ctx.search then vim.fn.search(ctx.search) end
