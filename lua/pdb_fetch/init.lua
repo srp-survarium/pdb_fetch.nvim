@@ -333,7 +333,8 @@ function M.view(side, kind)
     local a = side_args(root, side)
     vim.list_extend(a, args)
     run(root, a, function(lines)
-      if stale and not addr then
+      -- peeks (floats) stay clean; the warning only heads full views
+      if stale and not addr and not (opts and opts.float) then
         table.insert(lines, 1,
           "; STALE LINES: " .. stale .. " - cursor mapping may be off; rebuild,")
         table.insert(lines, 2,
@@ -400,10 +401,6 @@ function M.view(side, kind)
       local b = side_args(root, "target")
       vim.list_extend(b, { "--address", taddr, "--view", "target" })
       run(root, b, function(out)
-        if stale then
-          table.insert(out, 1, "; STALE LINES: " .. stale ..
-            " - the line-delta pairing may be off; rebuild.")
-        end
         show_float(out, { root = root, side = "target", view = "target",
                           name = name, title = "target " .. taddr })
       end)
