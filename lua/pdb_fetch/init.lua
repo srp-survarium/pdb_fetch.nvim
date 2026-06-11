@@ -161,6 +161,10 @@ function M.show_log()
 end
 
 local function run(root, args, cb)
+  if vim.fn.executable("pdb_fetch") == 0 then
+    return vim.notify("pdb_fetch: not on PATH - launch nvim from the " ..
+      "project dev shell (nix develop)", vim.log.levels.ERROR)
+  end
   local cmd = vim.list_extend({ "pdb_fetch" }, args)
   log(table.concat(cmd, " ") .. "  [" .. root .. "]")
   vim.system(cmd, { cwd = root, text = true }, function(res)
@@ -178,12 +182,17 @@ end
 
 -- -------------------------------------------------------------- rendering --
 
+-- syntax per view: rich asm gets asm highlighting, the asm diff keeps
+-- diff's +/- coloring; tables stay plain
+local VIEW_FT = { base = "asm", target = "asm", diff = "diff" }
+
 local function fill(buf, lines, ctx, transient)
   vim.bo[buf].modifiable = true
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.bo[buf].modifiable = false
   vim.bo[buf].buftype = "nofile"
   vim.bo[buf].swapfile = false
+  vim.bo[buf].filetype = VIEW_FT[ctx.view] or ""
   -- splits/peeks: float buffers die with their window, view buffers persist
   -- (survive :split and window close, refresh on the next same query)
   vim.bo[buf].bufhidden = transient and "wipe" or "hide"
@@ -575,9 +584,13 @@ function M.attach_keymaps(buf)
     vbs = { "base", "structure" },
     vts = { "target", "structure" },
     vds = { "diff", "structure" },
+    -- f (function) and a (asm) both work for the asm views
     vbf = { "base", "asm" },
     vtf = { "target", "asm" },
     vdf = { "diff", "asm" },
+    vba = { "base", "asm" },
+    vta = { "target", "asm" },
+    vda = { "diff", "asm" },
   }
   for lhs, sv in pairs(maps) do
     vim.keymap.set("n", lhs, function() M.view(sv[1], sv[2]) end,

@@ -25,6 +25,7 @@ Buffer-local keymaps (no visual mode here):
 
     vbs / vts / vds   base / target structure, structure diff
     vbf / vtf / vdf   base / target function asm, asm diff
+    vba / vta / vda   the same (a = asm)
     vo                target | base asm side by side, scrollbound
                       (the objdiff look)
     V                 statement asm peek - base in source buffers; inside
