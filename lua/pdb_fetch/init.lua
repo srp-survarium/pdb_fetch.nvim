@@ -439,8 +439,10 @@ function M.attach_keymaps(buf)
   local maps = {
     vbs = { "base", "structure" },
     vts = { "target", "structure" },
+    vds = { "diff", "structure" },
     vbf = { "base", "asm" },
     vtf = { "target", "asm" },
+    vdf = { "diff", "asm" },
   }
   for lhs, sv in pairs(maps) do
     vim.keymap.set("n", lhs, function() M.view(sv[1], sv[2]) end,

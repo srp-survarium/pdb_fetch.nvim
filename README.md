@@ -23,13 +23,13 @@ One command, two arguments, tab-completable:
 
 Buffer-local keymaps (no visual mode here):
 
-    vbs / vts   base / target structure
-    vbf / vtf   base / target function asm
-    V           statement asm peek - base in source buffers; inside plugin
-                tables the side comes from the column under the cursor
-                (t.addr vs b.addr) or the diff line prefix
+    vbs / vts / vds   base / target structure, structure diff
+    vbf / vtf / vdf   base / target function asm, asm diff
+    V                 statement asm peek - base in source buffers; inside
+                      plugin tables the side comes from the column under
+                      the cursor (t.addr vs b.addr) or the diff line prefix
 
-Diff views (`:Vostok diff {stmt|asm|structure}`) have no default binding.
+`:Vostok diff stmt` (the diff opened at the statement) has no binding.
 
 - Function/statement at cursor resolve through the project's base rich index
   (PDB line tables); a `0x<addr>` under the cursor wins over position.
