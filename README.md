@@ -21,8 +21,15 @@ One command, two arguments, tab-completable:
 | **target** | the PAIRED statement's asm        | rich asm                | statement table |
 | **diff**   | asm diff for the statement        | asm diff                | structure diff  |
 
-Buffer-local keymaps: `<leader>v` + side/view chord -
-`bs/ba/bt`, `ts/ta/tt`, `ds/da/dt` ("t" = sTructure).
+Buffer-local keymaps (no visual mode here):
+
+    vbs / vts   base / target structure
+    vbf / vtf   base / target function asm
+    V           statement asm peek - base in source buffers; inside plugin
+                tables the side comes from the column under the cursor
+                (t.addr vs b.addr) or the diff line prefix
+
+Diff views (`:Vostok diff {stmt|asm|structure}`) have no default binding.
 
 - Function/statement at cursor resolve through the project's base rich index
   (PDB line tables); a `0x<addr>` under the cursor wins over position.

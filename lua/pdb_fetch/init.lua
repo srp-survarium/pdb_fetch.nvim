@@ -6,7 +6,7 @@ local M = {}
 local uv = vim.uv or vim.loop
 
 M.config = {
-  keymaps = true, -- <leader>v + side/view chord in c/cpp buffers
+  keymaps = true, -- vbs/vts (structure), vbf/vtf (function asm), V (stmt peek)
 }
 
 local INDEX = { base = "binaries/rich/base/index.jsonl",
@@ -167,6 +167,8 @@ local function fill(buf, lines, ctx, transient)
   vim.keymap.set("n", "q", "<cmd>close<cr>", opts)
   vim.keymap.set("n", "<CR>", function() M.follow() end, opts)
   vim.keymap.set("n", "ga", function() M.follow() end, opts)
+  -- V peeks here too: side inferred from the table column / line prefix
+  vim.keymap.set("n", "V", function() M.follow() end, opts)
 end
 
 local function show_float(lines, ctx)
@@ -433,14 +435,22 @@ function M.complete(_, cmdline)
 end
 
 function M.attach_keymaps(buf)
-  for s, side in pairs({ b = "base", t = "target", d = "diff" }) do
-    for v, kind in pairs({ s = "stmt", a = "asm", t = "structure" }) do
-      vim.keymap.set("n", "<leader>v" .. s .. v,
-        function() M.view(side, kind) end,
-        { buffer = buf, silent = true,
-          desc = ("pdb_fetch: %s %s"):format(side, kind) })
-    end
+  -- sushi doesn't use visual mode: plain v-prefixed chords, and V itself
+  -- peeks the current statement's asm (base in source; in plugin views the
+  -- side comes from the table column / diff line prefix).
+  local maps = {
+    vbs = { "base", "structure" },
+    vts = { "target", "structure" },
+    vbf = { "base", "asm" },
+    vtf = { "target", "asm" },
+  }
+  for lhs, sv in pairs(maps) do
+    vim.keymap.set("n", lhs, function() M.view(sv[1], sv[2]) end,
+      { buffer = buf, silent = true,
+        desc = ("pdb_fetch: %s %s"):format(sv[1], sv[2]) })
   end
+  vim.keymap.set("n", "V", function() M.view("base", "stmt") end,
+    { buffer = buf, silent = true, desc = "pdb_fetch: statement asm peek" })
 end
 
 return M
