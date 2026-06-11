@@ -172,7 +172,16 @@ local function fill(buf, lines, ctx, transient)
   vim.keymap.set("n", "V", function() M.follow() end, opts)
 end
 
+--- Peeks show JUST the asm: drop pdb_fetch's `;` meta and signature lines,
+--- keep the [0xNN] statement marker and instruction lines. The side lives in
+--- the float title (BASE/TARGET + address) so it is never ambiguous.
 local function show_float(lines, ctx)
+  local asm = {}
+  for _, l in ipairs(lines) do
+    if l:match("^%[?0[xX]%x") then asm[#asm + 1] = l end
+  end
+  if #asm > 0 then lines = asm end -- errors/odd output stay verbatim
+  ctx.title = (ctx.side or "?"):upper() .. (ctx.addr and (" " .. ctx.addr) or "")
   local width = 0
   for _, l in ipairs(lines) do width = math.max(width, #l) end
   width = math.min(width + 1, vim.o.columns - 4)
@@ -272,7 +281,7 @@ function M.follow()
   vim.list_extend(args, { "--view", view })
   run(ctx.root, args, function(lines)
     show_float(lines, { root = ctx.root, side = side, view = view,
-                        name = ctx.name, title = side .. " " .. hex })
+                        name = ctx.name, addr = hex })
   end)
 end
 
@@ -343,6 +352,7 @@ function M.view(side, kind)
       end
       local ctx = { root = root, side = side, view = view, name = name,
                     title = side .. " " .. view,
+                    addr = opts and opts.addr,
                     search = opts and opts.search }
       if opts and opts.float then show_float(lines, ctx)
       else show_split(lines, ctx) end
@@ -366,8 +376,9 @@ function M.view(side, kind)
   end
 
   if side == "base" then
-    show({ "--address", va_of(entry, stmt.off), "--view", "base" }, "base",
-      { float = true })
+    local va = va_of(entry, stmt.off)
+    show({ "--address", va, "--view", "base" }, "base",
+      { float = true, addr = va })
   elseif side == "diff" then
     -- the diff view ignores statement selectors: open it whole and land on
     -- the statement's base offset
@@ -403,10 +414,31 @@ function M.view(side, kind)
       vim.list_extend(b, { "--address", taddr, "--view", "target" })
       run(root, b, function(out)
         show_float(out, { root = root, side = "target", view = "target",
-                          name = name, title = "target " .. taddr })
+                          name = name, addr = taddr })
       end)
     end)
   end
+end
+
+--- The V peek. Inside plugin views the side comes from the table column /
+--- diff prefix (follow). In source buffers, carcass stubs annotate each
+--- statement with its TARGET VA (`// <0xVA>|...`) - peek that statement's
+--- target asm; lines without an annotation peek the base statement.
+function M.peek()
+  if vim.b.pdb_fetch then return M.follow() end
+  local tva = vim.api.nvim_get_current_line():match("<(0[xX]%x+)>")
+  if not tva then return M.view("base", "stmt") end
+  local root = project_root(0)
+  if not root then
+    return vim.notify("pdb_fetch: no binaries/rich above this file",
+      vim.log.levels.ERROR)
+  end
+  local a = side_args(root, "target")
+  vim.list_extend(a, { "--address", tva, "--view", "target" })
+  run(root, a, function(out)
+    show_float(out, { root = root, side = "target", view = "target",
+                      name = tva, addr = tva })
+  end)
 end
 
 --- Run the project's rebuild (build + regen of every index the views read)
@@ -475,7 +507,7 @@ function M.attach_keymaps(buf)
       { buffer = buf, silent = true,
         desc = ("pdb_fetch: %s %s"):format(sv[1], sv[2]) })
   end
-  vim.keymap.set("n", "V", function() M.view("base", "stmt") end,
+  vim.keymap.set("n", "V", function() M.peek() end,
     { buffer = buf, silent = true, desc = "pdb_fetch: statement asm peek" })
 end
 
