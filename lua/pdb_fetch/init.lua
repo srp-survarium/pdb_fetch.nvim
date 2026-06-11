@@ -586,9 +586,9 @@ function M.attach_keymaps(buf)
   end
   vim.keymap.set("n", "V", function() M.peek() end,
     { buffer = buf, silent = true, desc = "pdb_fetch: statement asm peek" })
-  vim.keymap.set("n", "vd", function() M.view_pair() end,
+  vim.keymap.set("n", "vo", function() M.view_pair() end,
     { buffer = buf, silent = true,
-      desc = "pdb_fetch: target|base asm side by side" })
+      desc = "pdb_fetch: target|base asm side by side (objdiff look)" })
 end
 
 return M
