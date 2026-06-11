@@ -25,6 +25,8 @@ Buffer-local keymaps (no visual mode here):
 
     vbs / vts / vds   base / target structure, structure diff
     vbf / vtf / vdf   base / target function asm, asm diff
+    vd                target | base asm side by side, scrollbound
+                      (vds/vdf still work - vim waits the timeout)
     V                 statement asm peek - base in source buffers; inside
                       plugin tables the side comes from the column under
                       the cursor (t.addr vs b.addr) or the diff line prefix

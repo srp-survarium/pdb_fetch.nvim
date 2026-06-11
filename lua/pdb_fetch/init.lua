@@ -444,6 +444,59 @@ function M.view(side, kind)
   end
 end
 
+--- vd: side-by-side function asm - TARGET left, BASE right (the objdiff
+--- look), scrollbound. Buffers come from the same naming scheme as the
+--- other views, so rerunning refreshes in place.
+function M.view_pair()
+  local root = project_root(0)
+  if not root then
+    return vim.notify("pdb_fetch: no binaries/rich above this file",
+      vim.log.levels.ERROR)
+  end
+  local relfile = rel_source(vim.api.nvim_buf_get_name(0), root)
+  if not relfile then
+    return vim.notify("pdb_fetch: buffer is not under <root>/sources/",
+      vim.log.levels.ERROR)
+  end
+  local lnum = vim.api.nvim_win_get_cursor(0)[1]
+  local entry = function_at(root, relfile, lnum)
+  if not entry then
+    return vim.notify("pdb_fetch: no function at this line in the base index",
+      vim.log.levels.WARN)
+  end
+  local qn = qualified_name(entry)
+
+  local function fetch(side, view, cb)
+    local a = side_args(root, side)
+    vim.list_extend(a, { "--function", qn, "--view", view })
+    run(root, a, cb)
+  end
+
+  fetch("target", "target", function(tlines)
+    fetch("base", "base", function(blines)
+      show_split(tlines, { root = root, side = "target", view = "target",
+                           name = entry.name, title = "target" })
+      local twin = vim.api.nvim_get_current_win()
+      vim.wo[twin].scrollbind = true
+      vim.cmd("rightbelow vsplit")
+      local bbuf_lines = blines
+      -- render base beside target through the same per-view buffer scheme
+      local sym = (entry.name or "?"):gsub("[^%w_:~]+", "."):sub(1, 80)
+      local bname = ("pdbfetch://base-base/%s"):format(sym)
+      local bbuf = vim.fn.bufnr("^" .. vim.fn.fnameescape(bname) .. "$")
+      if bbuf == -1 then
+        bbuf = vim.api.nvim_create_buf(true, true)
+        vim.api.nvim_buf_set_name(bbuf, bname)
+      end
+      fill(bbuf, bbuf_lines, { root = root, side = "base", view = "base",
+                               name = entry.name })
+      vim.api.nvim_win_set_buf(0, bbuf)
+      vim.wo[0].scrollbind = true
+      vim.cmd("syncbind")
+    end)
+  end)
+end
+
 --- The V peek. Inside plugin views the side comes from the table column /
 --- diff prefix (follow). In source buffers, carcass stubs annotate each
 --- statement with its TARGET VA (`// <0xVA>|...`) - peek that statement's
@@ -533,6 +586,9 @@ function M.attach_keymaps(buf)
   end
   vim.keymap.set("n", "V", function() M.peek() end,
     { buffer = buf, silent = true, desc = "pdb_fetch: statement asm peek" })
+  vim.keymap.set("n", "vd", function() M.view_pair() end,
+    { buffer = buf, silent = true,
+      desc = "pdb_fetch: target|base asm side by side" })
 end
 
 return M
