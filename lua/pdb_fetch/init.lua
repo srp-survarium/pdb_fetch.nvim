@@ -153,12 +153,15 @@ end
 
 -- -------------------------------------------------------------- rendering --
 
-local function fill(buf, lines, ctx)
+local function fill(buf, lines, ctx, transient)
   vim.bo[buf].modifiable = true
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.bo[buf].modifiable = false
   vim.bo[buf].buftype = "nofile"
-  vim.bo[buf].bufhidden = "wipe"
+  vim.bo[buf].swapfile = false
+  -- splits/peeks: float buffers die with their window, view buffers persist
+  -- (survive :split and window close, refresh on the next same query)
+  vim.bo[buf].bufhidden = transient and "wipe" or "hide"
   vim.b[buf].pdb_fetch = ctx
   local opts = { buffer = buf, nowait = true, silent = true }
   vim.keymap.set("n", "q", "<cmd>close<cr>", opts)
@@ -172,28 +175,42 @@ local function show_float(lines, ctx)
   width = math.min(width + 1, vim.o.columns - 4)
   local height = math.min(#lines, math.floor(vim.o.lines * 0.6))
   local buf = vim.api.nvim_create_buf(false, true)
-  fill(buf, lines, ctx)
-  vim.api.nvim_open_win(buf, true, {
+  fill(buf, lines, ctx, true)
+  local win = vim.api.nvim_open_win(buf, true, {
     relative = "cursor", row = 1, col = 0,
     width = width, height = height,
     style = "minimal", border = "single",
     title = ctx.title, title_pos = "left",
   })
+  -- a peek dismisses itself: leaving the float closes it (q/<Esc> too)
+  vim.keymap.set("n", "<Esc>", "<cmd>close<cr>",
+    { buffer = buf, nowait = true, silent = true })
+  vim.api.nvim_create_autocmd("WinLeave", {
+    buffer = buf, once = true,
+    callback = function()
+      if vim.api.nvim_win_is_valid(win) then
+        vim.api.nvim_win_close(win, true)
+      end
+    end,
+  })
 end
 
+--- One buffer per (side, view, symbol): rerunning the same query refreshes
+--- it in place, different queries coexist - open as many splits as you like.
 local function show_split(lines, ctx)
-  -- one reusable window; new content replaces the old view
+  local sym = (ctx.name or "?"):gsub("[^%w_:~]+", "."):sub(1, 80)
+  local name = ("pdbfetch://%s-%s/%s"):format(ctx.side, ctx.view, sym)
+  local buf = vim.fn.bufnr("^" .. vim.fn.fnameescape(name) .. "$")
+  if buf == -1 then
+    buf = vim.api.nvim_create_buf(true, true)
+    vim.api.nvim_buf_set_name(buf, name)
+  end
+  fill(buf, lines, ctx)
   local win
   for _, w in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
-    if vim.b[vim.api.nvim_win_get_buf(w)].pdb_fetch_split then win = w end
+    if vim.api.nvim_win_get_buf(w) == buf then win = w break end
   end
-  local buf = vim.api.nvim_create_buf(false, true)
-  fill(buf, lines, ctx)
-  vim.b[buf].pdb_fetch_split = true
-  pcall(vim.api.nvim_buf_set_name, buf,
-    ("pdbfetch://%s-%s"):format(ctx.side, ctx.view))
   if win then
-    vim.api.nvim_win_set_buf(win, buf)
     vim.api.nvim_set_current_win(win)
   else
     vim.cmd("botright split")
