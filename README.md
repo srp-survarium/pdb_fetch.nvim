@@ -38,6 +38,21 @@ The project root is resolved from the EDITED BUFFER's path (walk up to
 `pdb_fetch` on PATH (the consuming project's dev shell provides it) and a
 generated `binaries/rich/{base,target}` index pair.
 
-## Status
+## Install
 
-Interface agreed; implementation pending.
+lazy.nvim:
+
+    { "srp-survarium/pdb_fetch.nvim" }
+
+Run nvim where `pdb_fetch` is on PATH (the project dev shell). The first
+use in a buffer greps the base index for that file's functions (rg if
+available) and caches it against the index mtime.
+
+## Pairing notes
+
+- Cross-side function selection uses the qualified path derived from the
+  mangled name: full demangled signatures do NOT pair (the target PDB spells
+  top-level parameter const, the base does not).
+- `target stmt` pairs statements by line DELTA from each side's first
+  statement (absolute line numbers differ between the two sources) - the
+  same key the structure-diff's `t.ln/b.ln` columns use.
