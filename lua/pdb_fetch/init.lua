@@ -392,6 +392,22 @@ function M.view(side, kind)
   end
 end
 
+local warned_missing
+--- Startup check, called when a c/cpp buffer attaches: warn (once) if the
+--- buffer belongs to a project but the pdb_fetch CLI is not on PATH - the
+--- usual cause is nvim launched outside the project dev shell. Outside a
+--- project the plugin is inert and stays silent.
+function M.check(buf)
+  if warned_missing or not project_root(buf) then return end
+  if vim.fn.executable("pdb_fetch") == 0 then
+    warned_missing = true
+    vim.notify(
+      "pdb_fetch.nvim: `pdb_fetch` not on PATH - launch nvim from the " ..
+      "project dev shell (nix develop) for :Vostok views to work",
+      vim.log.levels.WARN)
+  end
+end
+
 -- completion for :Vostok
 function M.complete(_, cmdline)
   local side = cmdline:match("Vostok%s+(%S+)%s+%S*$")

@@ -23,8 +23,10 @@ vim.api.nvim_create_autocmd("FileType", {
   pattern = { "c", "cpp" },
   group = vim.api.nvim_create_augroup("pdb_fetch_keymaps", { clear = true }),
   callback = function(ev)
-    if require("pdb_fetch").config.keymaps then
-      require("pdb_fetch").attach_keymaps(ev.buf)
+    local pf = require("pdb_fetch")
+    pf.check(ev.buf)
+    if pf.config.keymaps then
+      pf.attach_keymaps(ev.buf)
     end
   end,
 })
