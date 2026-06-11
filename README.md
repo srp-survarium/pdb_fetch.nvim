@@ -48,6 +48,15 @@ Run nvim where `pdb_fetch` is on PATH (the project dev shell). The first
 use in a buffer greps the base index for that file's functions (rg if
 available) and caches it against the index mtime.
 
+## Line numbers go stale - addresses don't
+
+Everything cursor-based maps through the LAST BUILD's PDB line tables: edit a
+file and every resolution below the edit shifts until the next rebuild. The
+plugin detects this (unsaved buffer edits, or source newer than the index)
+and prefixes views with a `; STALE LINES:` warning instead of resolving
+silently wrong. When in doubt, navigate by address - a `0x...` under the
+cursor bypasses line mapping entirely, and target VAs never move.
+
 ## Pairing notes
 
 - Cross-side function selection uses the qualified path derived from the

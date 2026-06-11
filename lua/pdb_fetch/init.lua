@@ -276,6 +276,21 @@ function M.view(side, kind)
   local cword = vim.fn.expand("<cword>")
   local addr = cword:match("^0[xX]%x+$") and cword
 
+  -- All cursor->function/statement mapping keys on the LAST BUILD's line
+  -- tables. Edits shift lines until the next rebuild - detect and SAY it
+  -- rather than resolve silently wrong. (Addresses never go stale: with the
+  -- cursor on a 0x... the index is bypassed entirely.)
+  local stale
+  if vim.bo.modified then
+    stale = "unsaved buffer edits"
+  else
+    local src = uv.fs_stat(vim.api.nvim_buf_get_name(0))
+    local idx = uv.fs_stat(root .. "/" .. INDEX.base)
+    if src and idx and src.mtime.sec > idx.mtime.sec then
+      stale = "source saved after the index was built"
+    end
+  end
+
   -- an address under the cursor (carcass comments carry target VAs) selects
   -- the function for target/diff views without needing the index
   local selector, entry
@@ -299,6 +314,12 @@ function M.view(side, kind)
     local a = side_args(root, side)
     vim.list_extend(a, args)
     run(root, a, function(lines)
+      if stale and not addr then
+        table.insert(lines, 1,
+          "; STALE LINES: " .. stale .. " - cursor mapping may be off; rebuild,")
+        table.insert(lines, 2,
+          ";              or navigate by address (cursor on a 0x...).")
+      end
       local ctx = { root = root, side = side, view = view, name = name,
                     title = side .. " " .. view,
                     search = opts and opts.search }
@@ -360,6 +381,10 @@ function M.view(side, kind)
       local b = side_args(root, "target")
       vim.list_extend(b, { "--address", taddr, "--view", "target" })
       run(root, b, function(out)
+        if stale then
+          table.insert(out, 1, "; STALE LINES: " .. stale ..
+            " - the line-delta pairing may be off; rebuild.")
+        end
         show_float(out, { root = root, side = "target", view = "target",
                           name = name, title = "target " .. taddr })
       end)
