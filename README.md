@@ -55,6 +55,13 @@ Run nvim where `pdb_fetch` is on PATH (the project dev shell). The first
 use in a buffer greps the base index for that file's functions (rg if
 available) and caches it against the index mtime.
 
+## Rebuilding without leaving the editor
+
+`:VostokRebuild [target]` runs the project's `scripts/rebuild.py` in a
+terminal split at the buffer's project root (build + regen of everything the
+views read) and notifies on completion. The views' index cache invalidates by
+mtime, so the next query reads fresh data automatically.
+
 ## Line numbers go stale - addresses don't
 
 Everything cursor-based maps through the LAST BUILD's PDB line tables: edit a

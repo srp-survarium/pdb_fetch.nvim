@@ -409,6 +409,32 @@ function M.view(side, kind)
   end
 end
 
+--- Run the project's rebuild (build + regen of every index the views read)
+--- in a terminal split at the project root. Extra args go to rebuild.py
+--- (e.g. :VostokRebuild logging builds one project first).
+function M.rebuild(args)
+  local root = project_root(0)
+  if not root then
+    return vim.notify("pdb_fetch: no binaries/rich above this file",
+      vim.log.levels.ERROR)
+  end
+  local cmd = { "python3", "scripts/rebuild.py" }
+  vim.list_extend(cmd, args or {})
+  vim.cmd(M.config.split)
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_win_set_buf(0, buf)
+  vim.fn.termopen(cmd, {
+    cwd = root,
+    on_exit = function(_, code)
+      vim.schedule(function()
+        vim.notify(code == 0 and "rebuild: done - views are fresh"
+          or ("rebuild: FAILED (exit " .. code .. ")"),
+          code == 0 and vim.log.levels.INFO or vim.log.levels.ERROR)
+      end)
+    end,
+  })
+end
+
 local warned_missing
 --- Startup check, called when a c/cpp buffer attaches: warn (once) if the
 --- buffer belongs to a project but the pdb_fetch CLI is not on PATH - the

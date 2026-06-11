@@ -19,6 +19,10 @@ end, {
   desc = "pdb_fetch views for the function/statement at cursor",
 })
 
+vim.api.nvim_create_user_command("VostokRebuild", function(opts)
+  require("pdb_fetch").rebuild(opts.fargs)
+end, { nargs = "*", desc = "run scripts/rebuild.py at the project root" })
+
 vim.api.nvim_create_autocmd("FileType", {
   pattern = { "c", "cpp" },
   group = vim.api.nvim_create_augroup("pdb_fetch_keymaps", { clear = true }),
