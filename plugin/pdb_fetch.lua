@@ -19,6 +19,10 @@ end, {
   desc = "pdb_fetch views for the function/statement at cursor",
 })
 
+vim.api.nvim_create_user_command("VostokLog", function()
+  require("pdb_fetch").show_log()
+end, { desc = "show recent pdb_fetch invocations + resolved binary path" })
+
 vim.api.nvim_create_user_command("VostokRebuild", function(opts)
   require("pdb_fetch").rebuild(opts.fargs)
 end, { nargs = "*", desc = "run scripts/rebuild.py at the project root" })

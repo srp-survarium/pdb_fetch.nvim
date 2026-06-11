@@ -137,8 +137,32 @@ local function side_args(root, side)
   return args
 end
 
+-- every invocation is logged (:VostokLog) with the resolved binary path -
+-- a stale dev shell shipping an old pdb_fetch is the classic silent killer
+-- (an old --address selector re-based VAs as RVAs: wrong function entirely)
+M._log = {}
+local function log(line)
+  table.insert(M._log, os.date("%H:%M:%S ") .. line)
+  if #M._log > 200 then table.remove(M._log, 1) end
+end
+
+function M.show_log()
+  local lines = #M._log > 0 and vim.deepcopy(M._log) or { "(no queries yet)" }
+  table.insert(lines, 1, "pdb_fetch binary: " ..
+    (vim.fn.exepath("pdb_fetch") ~= "" and vim.fn.exepath("pdb_fetch")
+     or "NOT ON PATH"))
+  vim.cmd(M.config.split)
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.bo[buf].buftype = "nofile"
+  vim.bo[buf].bufhidden = "wipe"
+  vim.api.nvim_win_set_buf(0, buf)
+  vim.keymap.set("n", "q", "<cmd>close<cr>", { buffer = buf, nowait = true })
+end
+
 local function run(root, args, cb)
   local cmd = vim.list_extend({ "pdb_fetch" }, args)
+  log(table.concat(cmd, " ") .. "  [" .. root .. "]")
   vim.system(cmd, { cwd = root, text = true }, function(res)
     vim.schedule(function()
       local out = (res.stdout or "")
