@@ -206,15 +206,23 @@ local function fill(buf, lines, ctx, transient)
 end
 
 --- Peeks show JUST the asm: drop pdb_fetch's `;` meta and signature lines,
---- keep the [0xNN] statement marker and instruction lines. The side lives in
---- the float title (BASE/TARGET + address) so it is never ambiguous.
-local function show_float(lines, ctx)
+--- keep the [0xNN] statement marker and instruction lines.
+local function asm_only(lines)
   local asm = {}
   for _, l in ipairs(lines) do
     if l:match("^%[?0[xX]%x") then asm[#asm + 1] = l end
   end
-  if #asm > 0 then lines = asm end -- errors/odd output stay verbatim
-  ctx.title = (ctx.side or "?"):upper() .. (ctx.addr and (" " .. ctx.addr) or "")
+  if #asm > 0 then return asm end
+  return lines -- errors/odd output stay verbatim
+end
+
+--- The side lives in the float title (BASE/TARGET + address) so it is never
+--- ambiguous; pre-composed content (ctx.raw) brings its own title.
+local function show_float(lines, ctx)
+  if not ctx.raw then
+    lines = asm_only(lines)
+    ctx.title = (ctx.side or "?"):upper() .. (ctx.addr and (" " .. ctx.addr) or "")
+  end
   local width = 0
   for _, l in ipairs(lines) do width = math.max(width, #l) end
   width = math.min(width + 1, vim.o.columns - 4)
@@ -277,10 +285,65 @@ local function column_at(header, col)
   end
 end
 
+--- Both statements of a structure-diff row, side by side in one float:
+--- target asm left, base asm right, sizes from the row's t.sz/b.sz columns.
+local function peek_pair(ctx, row, header)
+  local fields = {}
+  local start = 0
+  for field in (header .. "|"):gmatch("([^|]*)|") do
+    local value = vim.trim(row:sub(start + 1, start + #field))
+    fields[vim.trim(field)] = value
+    start = start + #field + 1
+  end
+  local taddr = (fields["t.addr"] or ""):match("^0x%x+$")
+  local baddr = (fields["b.addr"] or ""):match("^0x%x+$")
+  if not (taddr and baddr) then return false end -- one-sided row: single peek
+
+  local function fetch(side, addr, cb)
+    local a = side_args(ctx.root, side)
+    vim.list_extend(a, { "--address", addr,
+                         "--view", side == "target" and "target" or "base" })
+    run(ctx.root, a, cb)
+  end
+  fetch("target", taddr, function(tl)
+    fetch("base", baddr, function(bl)
+      tl, bl = asm_only(tl), asm_only(bl)
+      local width = 0
+      for _, l in ipairs(tl) do width = math.max(width, #l) end
+      local out = {}
+      for i = 1, math.max(#tl, #bl) do
+        local l, r = tl[i] or "", bl[i] or ""
+        out[#out + 1] = l .. string.rep(" ", width - #l + 2) .. "| " .. r
+      end
+      show_float(out, {
+        root = ctx.root, side = "diff", view = "pair", raw = true,
+        title = ("TARGET %s %s | BASE %s %s"):format(
+          taddr, fields["t.sz"] or "", baddr, fields["b.sz"] or ""),
+      })
+    end)
+  end)
+  return true
+end
+
 --- Follow the address/offset under the cursor inside a plugin view.
 function M.follow()
   local ctx = vim.b.pdb_fetch
   if not ctx then return end
+
+  -- a single statement's asm alone is rarely what you want from a paired
+  -- structure-diff row: peek BOTH sides side by side when the row has both
+  -- addresses (works from anywhere on the row, no address under cursor needed)
+  local sd_header
+  if ctx.view == "structure-diff" then
+    for _, l in ipairs(vim.api.nvim_buf_get_lines(0, 0, 20, false)) do
+      if l:find("|t.addr", 1, true) then sd_header = l break end
+    end
+    if sd_header
+        and peek_pair(ctx, vim.api.nvim_get_current_line(), sd_header) then
+      return
+    end
+  end
+
   local word = vim.fn.expand("<cword>")
   local hex = word:match("^0[xX]%x+$") and word
   if not hex then
@@ -289,12 +352,7 @@ function M.follow()
 
   local side, selector = ctx.side, nil
   if ctx.view == "structure-diff" then
-    -- side comes from the column (t.addr / b.addr)
-    local header
-    for _, l in ipairs(vim.api.nvim_buf_get_lines(0, 0, 20, false)) do
-      if l:find("|t.addr", 1, true) then header = l break end
-    end
-    local field = header and column_at(header, vim.fn.col(".") - 1) or ""
+    local field = sd_header and column_at(sd_header, vim.fn.col(".") - 1) or ""
     side = field:find("^t%.") and "target" or "base"
     selector = { "--address", hex }
   elseif ctx.view == "diff" then
