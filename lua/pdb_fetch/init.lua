@@ -38,8 +38,8 @@ end
 -- {index_path -> {mtime=, files={relfile -> entries}}}
 local cache = {}
 
-local function entries_for(root, relfile)
-  local idx = root .. "/" .. INDEX.base
+local function entries_for(root, relfile, side)
+  local idx = root .. "/" .. INDEX[side or "base"]
   local st = uv.fs_stat(idx)
   if not st then return nil end
   local c = cache[idx]
@@ -78,18 +78,26 @@ local function line_span(e)
   return lo, hi
 end
 
---- The function whose statement lines cover `lnum` (tightest span wins -
---- inlined-into neighbors can overlap).
+--- The function at `lnum`. The cursor inside a function's statement span wins
+--- (tightest span - inlined-into neighbors can overlap). The first statement is
+--- the opening `{`, so the SIGNATURE line(s) above it aren't in any span; when
+--- nothing covers the cursor, fall back to the function whose body starts just
+--- below (the cursor is on its signature / leading comment).
 local function function_at(root, relfile, lnum)
   local best, best_width
+  local below, below_lo
   for _, e in ipairs(entries_for(root, relfile) or {}) do
     local lo, hi = line_span(e)
-    if lnum >= lo and lnum <= hi then
-      local width = hi - lo
-      if not best or width < best_width then best, best_width = e, width end
+    if lo <= hi then
+      if lnum >= lo and lnum <= hi then
+        local width = hi - lo
+        if not best or width < best_width then best, best_width = e, width end
+      elseif lo >= lnum and (not below_lo or lo < below_lo) then
+        below, below_lo = e, lo
+      end
     end
   end
-  return best
+  return best or below
 end
 
 --- The statement starting exactly on `lnum` (first if several).
@@ -128,16 +136,17 @@ end
 --   cur    current fuzzy %        (pairs.fuzzy_pct)
 --   best   best-ever fuzzy %      (history.best_fuzzy_pct, ICF-churn-immune)
 --   tries  matcher dispatches     (attempts.n)
---   struct matched/total stmts    (t_stmts - n_trgt_only - n_size_rows / t_stmts)
--- struct is the STATEMENT skeleton only - the rich index carries no locals, so a
--- locals-inclusive ratio would need a match.db/pdb_fetch extension (TODO).
+--   struct body-statement count   (min/max of base/target body, brace-trimmed)
+-- struct is COUNT-based (equal counts => full; byte-size diffs are the % above).
+-- Locals are a separate field, computed from the rich index (locals[] per side,
+-- which match.db does not carry) - see locals_counts / hint rendering.
 
 local MATCH_DB = "docs/binary_matching/match.db"
 
 local METRIC_SQL = table.concat({
   "SELECT s.mangled AS m, s.demangled AS dem, p.fuzzy_pct AS cur,",
-  "       h.best_fuzzy_pct AS best, coalesce(a.n,0) AS tries, p.t_stmts AS tt,",
-  "       p.n_trgt_only AS tonly, p.n_size_rows AS szrows, p.struct_class AS cls,",
+  "       h.best_fuzzy_pct AS best, coalesce(a.n,0) AS tries,",
+  "       p.t_stmts AS tt, p.b_stmts AS bt, p.struct_class AS cls,",
   "       t.module AS module, t.size AS size",
   "FROM target_functions t JOIN symbols s ON s.id = t.sym",
   "LEFT JOIN pairs p ON p.sym = t.sym",
@@ -183,10 +192,21 @@ local function load_metrics(root)
     local rec = { cur = nz(r.cur), best = nz(r.best), tries = nz(r.tries) or 0,
                   cls = nz(r.cls), module = nz(r.module), size = nz(r.size) or 0,
                   dem = nz(r.dem) }
-    local tt = nz(r.tt)
-    if tt then -- paired: a statement counts as matched when present + same size
-      rec.st_m = math.max(tt - (nz(r.tonly) or 0) - (nz(r.szrows) or 0), 0)
-      rec.st_t = tt
+    -- structure = body-statement skeleton agreement, brace-trimmed and
+    -- COUNT-based: matched/total = min/max of the two sides' body-statement
+    -- counts, so ANY count gap counts against you in either direction (target-
+    -- only AND base-only statements are steerable). Equal counts read full;
+    -- per-statement byte-size diffs are the fuzzy % above, not structure
+    -- (subtracting them is what made a clearly-structured fn show 4/14). The one
+    -- exception is an EMPTY base body: there are no source statements to
+    -- structure-match (the target's come purely from compiler-generated code,
+    -- e.g. a member-dtor walk), so it is suppressed rather than reading 0/N.
+    local tt, bt = nz(r.tt), nz(r.bt)
+    if tt and bt then
+      local t_body, b_body = math.max(tt - 2, 0), math.max(bt - 2, 0)
+      if b_body > 0 then
+        rec.st_m, rec.st_t = math.min(t_body, b_body), math.max(t_body, b_body)
+      end
     end
     by[r.m] = rec
   end
@@ -205,9 +225,39 @@ local function hint_hl(cur)
   return "DiagnosticError"
 end
 
---- eol virtual-text chunks for a metric record: cur% (colored) · best · m/t · N⟳.
---- An unpaired function (no record / no cur) reads "— n/a".
-local function metric_chunks(rec)
+--- Locals agreement for a function: the count of PDB-recorded locals on each
+--- side, as min/max (the same count basis as the statement skeleton - match.db
+--- carries no locals, so this reads the rich index directly). { l_m, l_t } or
+--- nil when neither side declares any. base entry required; target optional.
+local function locals_counts(base_e, target_e)
+  local b = base_e and #(base_e.locals or {}) or 0
+  if not target_e then
+    return b > 0 and { l_m = 0, l_t = b } or nil
+  end
+  local t = #(target_e.locals or {})
+  if b == 0 and t == 0 then return nil end
+  return { l_m = math.min(b, t), l_t = math.max(b, t) }
+end
+
+--- Locals counts for `mangled` in `relfile`, pairing the base and target rich
+--- index entries by mangled. For view headers / refresh (the hint path already
+--- has the entries in hand). nil when unavailable.
+local function locals_pair(root, relfile, mangled)
+  if not (relfile and mangled) then return nil end
+  local be, te
+  for _, e in ipairs(entries_for(root, relfile, "base") or {}) do
+    if e.mangled == mangled then be = e break end
+  end
+  if not be then return nil end
+  for _, e in ipairs(entries_for(root, relfile, "target") or {}) do
+    if e.mangled == mangled then te = e break end
+  end
+  return locals_counts(be, te)
+end
+
+--- eol virtual-text chunks: cur% (colored) · ↑best · s m/t (structure) · ℓ m/t
+--- (locals) · N⟳ retries. An unpaired function (no record / no cur) is "— n/a".
+local function metric_chunks(rec, loc)
   if not rec or rec.cur == nil then
     return { { "  — n/a", "Comment" } }
   end
@@ -216,8 +266,11 @@ local function metric_chunks(rec)
   if rec.best and rec.best > (rec.cur + 0.5) then
     chunks[#chunks + 1] = { ("  ↑%.0f%%"):format(rec.best), "Comment" }
   end
-  if rec.st_t then
-    chunks[#chunks + 1] = { ("  %d/%d"):format(rec.st_m, rec.st_t), "Comment" }
+  if rec.st_t and rec.st_t > 0 then
+    chunks[#chunks + 1] = { ("  s%d/%d"):format(rec.st_m, rec.st_t), "Comment" }
+  end
+  if loc and loc.l_t and loc.l_t > 0 then
+    chunks[#chunks + 1] = { ("  ℓ%d/%d"):format(loc.l_m, loc.l_t), "Comment" }
   end
   if rec.tries and rec.tries > 0 then
     chunks[#chunks + 1] = { ("  %d⟳"):format(rec.tries), "Comment" }
@@ -226,14 +279,19 @@ local function metric_chunks(rec)
 end
 
 --- A `;`-prefixed header line summarising a function's metrics, for view tops.
-local function metric_header(rec, name)
+local function metric_header(rec, name, loc)
   if not rec then return nil end
   local parts = {}
   parts[#parts + 1] = rec.cur ~= nil
     and (rec.cur >= 99.995 and "100% (exact)" or ("%.1f%%"):format(rec.cur))
     or "unpaired"
   if rec.best ~= nil then parts[#parts + 1] = ("best %.1f%%"):format(rec.best) end
-  if rec.st_t then parts[#parts + 1] = ("structure %d/%d"):format(rec.st_m, rec.st_t) end
+  if rec.st_t and rec.st_t > 0 then
+    parts[#parts + 1] = ("structure %d/%d"):format(rec.st_m, rec.st_t)
+  end
+  if loc and loc.l_t and loc.l_t > 0 then
+    parts[#parts + 1] = ("locals %d/%d"):format(loc.l_m, loc.l_t)
+  end
   if rec.cls then parts[#parts + 1] = rec.cls end
   if rec.tries and rec.tries > 0 then parts[#parts + 1] = ("%d tries"):format(rec.tries) end
   return "; " .. (name and (name .. "  ") or "") .. table.concat(parts, "  ·  ")
@@ -516,6 +574,12 @@ function M.hints(buf)
   if not relfile then return end
   local by = load_metrics(root)
   if not by then return end
+  -- target entries (by mangled) for the locals field - the only metric not in
+  -- match.db; one cached grep of the target index for this file.
+  local tgt = {}
+  for _, e in ipairs(entries_for(root, relfile, "target") or {}) do
+    if e.mangled and not tgt[e.mangled] then tgt[e.mangled] = e end
+  end
   -- one hint per function, on its first body statement line; when two functions
   -- share that line (inlining overlap), the enclosing (widest-span) one owns it.
   local at = {} -- lnum -> { entry=, width= }
@@ -531,8 +595,9 @@ function M.hints(buf)
   local last = vim.api.nvim_buf_line_count(buf)
   for lnum, v in pairs(at) do
     if lnum >= 1 and lnum <= last then
+      local e = v.entry
       vim.api.nvim_buf_set_extmark(buf, HINT_NS, lnum - 1, 0, {
-        virt_text = metric_chunks(by[v.entry.mangled]),
+        virt_text = metric_chunks(by[e.mangled], locals_counts(e, tgt[e.mangled])),
         virt_text_pos = "eol", hl_mode = "combine",
       })
     end
@@ -599,6 +664,7 @@ function M.view(side, kind)
   end
   local name = entry and entry.name or addr
   local rec = entry and (load_metrics(root) or {})[entry.mangled]
+  local loc = entry and locals_pair(root, relfile, entry.mangled)
 
   local function show(args, view, opts)
     local a = side_args(root, side)
@@ -607,7 +673,7 @@ function M.view(side, kind)
       -- full views (not peeks/floats) head with the function's match metrics,
       -- then the stale-cursor warning; floats stay clean.
       if not (opts and opts.float) then
-        local header = metric_header(rec)
+        local header = metric_header(rec, nil, loc)
         if header then table.insert(lines, 1, header) end
         if stale and not addr then
           table.insert(lines, header and 2 or 1,
@@ -617,7 +683,7 @@ function M.view(side, kind)
         end
       end
       local ctx = { root = root, side = side, view = view, name = name,
-                    mangled = entry and entry.mangled,
+                    mangled = entry and entry.mangled, relfile = relfile,
                     title = side .. " " .. view, args = a,
                     addr = opts and opts.addr,
                     search = opts and opts.search }
@@ -687,10 +753,17 @@ function M.view(side, kind)
   end
 end
 
---- vd: side-by-side function asm - TARGET left, BASE right (the objdiff
---- look), scrollbound. Buffers come from the same naming scheme as the
---- other views, so rerunning refreshes in place.
-function M.view_pair()
+--- Side-by-side pair view: TARGET left, BASE right. `kind` is "asm" (function
+--- asm - the objdiff look) or "structure" (the statement table). opts.diff turns
+--- on a native Neovim diff between the panes (vDa/vDs - changed lines
+--- highlighted, folds off); otherwise the panes are just scrollbound (vo).
+--- Buffers follow the per-view naming, so rerunning refreshes in place.
+function M.view_pair(kind, opts)
+  kind = kind or "asm"
+  local diff = opts and opts.diff
+  local tview = kind == "structure" and "structure" or "target"
+  local bview = kind == "structure" and "structure" or "base"
+
   local root = project_root(0)
   if not root then
     return vim.notify("pdb_fetch: no binaries/rich above this file",
@@ -715,29 +788,43 @@ function M.view_pair()
     run(root, a, function(lines) cb(lines, a) end)
   end
 
-  fetch("target", "target", function(tlines, targs)
-    fetch("base", "base", function(blines, bargs)
-      show_split(tlines, { root = root, side = "target", view = "target",
-                           name = entry.name, mangled = entry.mangled,
-                           title = "target", args = targs })
+  -- find-or-make the refreshable named buffer for one pane
+  local function pane(side, view, lines, args)
+    local sym = (entry.name or "?"):gsub("[^%w_:~]+", "."):sub(1, 80)
+    local name = ("pdbfetch://%s-%s/%s"):format(side, view, sym)
+    local buf = vim.fn.bufnr("^" .. vim.fn.fnameescape(name) .. "$")
+    if buf == -1 then
+      buf = vim.api.nvim_create_buf(true, true)
+      vim.api.nvim_buf_set_name(buf, name)
+    end
+    fill(buf, lines, { root = root, side = side, view = view, name = entry.name,
+                       mangled = entry.mangled, relfile = relfile, args = args })
+    return buf
+  end
+
+  fetch("target", tview, function(tlines, targs)
+    fetch("base", bview, function(blines, bargs)
+      local tbuf = pane("target", tview, tlines, targs)
+      local bbuf = pane("base", bview, blines, bargs)
+      vim.cmd(M.config.split)
+      vim.api.nvim_win_set_buf(0, tbuf)
       local twin = vim.api.nvim_get_current_win()
-      vim.wo[twin].scrollbind = true
       vim.cmd("rightbelow vsplit")
-      local bbuf_lines = blines
-      -- render base beside target through the same per-view buffer scheme
-      local sym = (entry.name or "?"):gsub("[^%w_:~]+", "."):sub(1, 80)
-      local bname = ("pdbfetch://base-base/%s"):format(sym)
-      local bbuf = vim.fn.bufnr("^" .. vim.fn.fnameescape(bname) .. "$")
-      if bbuf == -1 then
-        bbuf = vim.api.nvim_create_buf(true, true)
-        vim.api.nvim_buf_set_name(bbuf, bname)
-      end
-      fill(bbuf, bbuf_lines, { root = root, side = "base", view = "base",
-                               name = entry.name, mangled = entry.mangled,
-                               args = bargs })
       vim.api.nvim_win_set_buf(0, bbuf)
-      vim.wo[0].scrollbind = true
-      vim.cmd("syncbind")
+      local bwin = vim.api.nvim_get_current_win()
+      if diff then
+        for _, w in ipairs({ twin, bwin }) do
+          vim.api.nvim_win_call(w, function()
+            vim.cmd("diffthis")
+            vim.wo.foldenable = false -- show the whole function, not just hunks
+          end)
+        end
+      else
+        vim.wo[twin].scrollbind = true
+        vim.wo[bwin].scrollbind = true
+        vim.api.nvim_win_call(bwin, function() vim.cmd("syncbind") end)
+      end
+      vim.api.nvim_set_current_win(twin)
     end)
   end)
 end
@@ -796,8 +883,9 @@ local function refresh_views(root)
     local ctx = vim.api.nvim_buf_is_loaded(buf) and vim.b[buf].pdb_fetch or nil
     if ctx and ctx.root == root and ctx.args then
       local rec = ctx.mangled and by and by[ctx.mangled]
+      local loc = locals_pair(root, ctx.relfile, ctx.mangled)
       run(root, ctx.args, function(lines)
-        local header = metric_header(rec)
+        local header = metric_header(rec, nil, loc)
         if header then table.insert(lines, 1, header) end
         if vim.api.nvim_buf_is_valid(buf) then set_buf_lines(buf, lines) end
       end)
@@ -1083,9 +1171,16 @@ function M.attach_keymaps(buf)
   end
   vim.keymap.set("n", "V", function() M.peek() end,
     { buffer = buf, silent = true, desc = "pdb_fetch: statement asm peek" })
-  vim.keymap.set("n", "vo", function() M.view_pair() end,
+  vim.keymap.set("n", "vo", function() M.view_pair("asm") end,
     { buffer = buf, silent = true,
       desc = "pdb_fetch: target|base asm side by side (objdiff look)" })
+  -- vDa/vDs: target|base in two windows as a native diff (asm / structure)
+  vim.keymap.set("n", "vDa", function() M.view_pair("asm", { diff = true }) end,
+    { buffer = buf, silent = true,
+      desc = "pdb_fetch: target|base asm diff, two windows" })
+  vim.keymap.set("n", "vDs", function() M.view_pair("structure", { diff = true }) end,
+    { buffer = buf, silent = true,
+      desc = "pdb_fetch: target|base structure diff, two windows" })
   vim.keymap.set("n", "vB", function() M.rebuild({}) end,
     { buffer = buf, silent = true, desc = "pdb_fetch: rebuild (build + regen)" })
 end
