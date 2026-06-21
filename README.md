@@ -15,7 +15,7 @@ One command, tab-completable. The two-argument form opens a view; the
 single-argument form toggles a setting or closes the views:
 
     :Vostok {base|target|diff} {stmt|asm|structure}
-    :Vostok {hints|autobuild|close}
+    :Vostok {hints|autobuild|diffhl|close}
 
 |            | `stmt` (one statement)            | `asm` (function, rich)  | `structure`     |
 |------------|-----------------------------------|-------------------------|-----------------|
@@ -31,7 +31,15 @@ Buffer-local keymaps (no visual mode here):
     vo                target | base asm side by side, scrollbound
                       (the objdiff look)
     vDa / vDs         target | base in TWO windows as a native diff
-                      (asm / structure) - changed lines highlighted, folds off
+                      (asm / structure). Each pane is NORMALIZED so only real
+                      divergences show: asm drops the per-instruction offset and
+                      the source-carrying `[0x..]:` markers (keeping mnemonics +
+                      labels); structure keeps just the `size` skeleton. So the
+                      diff no longer lights up every line from shifted addresses
+                      / base-only source. `:Vostok diffhl` toggles the coloring
+                      off (keeping the alignment) for a clean side-by-side read.
+                      (Addresses are stripped here, so use the single-side views
+                      for `<CR>` navigation.) `vo` is the raw scrollbound look.
     vB                rebuild (:VostokRebuild) and refresh the views
     V                 statement asm peek - base in source buffers; inside
                       plugin tables the side comes from the column under
@@ -134,6 +142,7 @@ Optional config (defaults shown):
       keymaps = true,            -- set false to bind your own
       hints = true,              -- inline match metrics per function
       build_on_save = false,     -- quiet rebuild.py on every source save
+      diff_highlight = true,     -- vDa/vDs coloring (off = aligned, no color)
       split = "botright vsplit", -- where views open
     })
 

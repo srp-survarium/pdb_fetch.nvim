@@ -9,6 +9,7 @@ M.config = {
   keymaps = true, -- vbs/vts (structure), vbf/vtf (function asm), V (stmt peek)
   hints = true, -- inline match metrics (cur/best/structure/retries) per function
   build_on_save = false, -- run rebuild.py quietly whenever a source is saved
+  diff_highlight = true, -- vDa/vDs color the diff; off = aligned, no coloring
   split = "botright vsplit", -- where view windows open
 }
 
@@ -393,6 +394,50 @@ local function asm_only(lines)
   end
   if #asm > 0 then return asm end
   return lines -- errors/odd output stay verbatim
+end
+
+--- Strip the per-side NOISE that makes a native two-window diff (vDa/vDs)
+--- light up every line, leaving only what is meant to line up across sides:
+---   * asm: drop the per-instruction `0xNN:` offset prefix and the `[0xNN]:`
+---     statement markers (base appends the source line there, target doesn't);
+---     keep `mnemonic operands` + jump labels - so only diverging instructions
+---     highlight (the objdiff intent), not every shifted address.
+---   * structure: keep just the `size` column (the statement skeleton); drop the
+---     absolute address, function-relative offset, source line, and the base-
+---     only `code` column - all of which differ between the two PDBs by design.
+--- Absolute addresses are gone, so `<CR>` follow doesn't work in these panes;
+--- use the single-side views (vbf/vbs/...) for navigation.
+local function diff_normalize(lines, kind)
+  local out = {}
+  for _, l in ipairs(lines) do
+    if kind == "structure" then
+      local size = l:match("^%s*0[xX]%x+%s*|[^|]*|%s*([^|]+)")
+      if size then
+        out[#out + 1] = vim.trim(size)
+      elseif l:match("|offst|") or l:match("^%s*%-+%+") or l:match("^%s*;") then
+        -- drop the column header, the `---+---` separator, and `; ...` meta
+      else
+        out[#out + 1] = l -- signature, `{`, `}`: identical on both sides
+      end
+    else -- asm
+      if not l:match("^%s*%[0[xX]%x+%]:") then -- drop [0xNN]: statement markers
+        out[#out + 1] = (l:gsub("^%s*0[xX]%x+:%s*", "")) -- strip instr offset
+      end
+    end
+  end
+  return out
+end
+
+-- vDa/vDs use Neovim's diff for ALIGNMENT (filler lines line matching code up
+-- across the two panes). When diff_highlight is off we blank the Diff* groups in
+-- those windows via winhighlight, so you get the aligned side-by-side with NO
+-- coloring at all - scoped to these windows, your other diffs keep their look.
+local DIFF_NOHL =
+  "DiffAdd:Normal,DiffChange:Normal,DiffText:Normal,DiffDelete:Normal"
+local function apply_diff_hl(win)
+  if vim.api.nvim_win_is_valid(win) then
+    vim.wo[win].winhighlight = M.config.diff_highlight and "" or DIFF_NOHL
+  end
 end
 
 --- The side lives in the float title (BASE/TARGET + address) so it is never
@@ -788,7 +833,9 @@ function M.view_pair(kind, opts)
     run(root, a, function(lines) cb(lines, a) end)
   end
 
-  -- find-or-make the refreshable named buffer for one pane
+  -- find-or-make the refreshable named buffer for one pane. In diff mode the
+  -- content is normalized (noise stripped) and ctx.normalize tells a post-build
+  -- refresh to do the same; vo keeps raw text (addresses live for <CR>).
   local function pane(side, view, lines, args)
     local sym = (entry.name or "?"):gsub("[^%w_:~]+", "."):sub(1, 80)
     local name = ("pdbfetch://%s-%s/%s"):format(side, view, sym)
@@ -797,8 +844,10 @@ function M.view_pair(kind, opts)
       buf = vim.api.nvim_create_buf(true, true)
       vim.api.nvim_buf_set_name(buf, name)
     end
-    fill(buf, lines, { root = root, side = side, view = view, name = entry.name,
-                       mangled = entry.mangled, relfile = relfile, args = args })
+    local norm = diff and kind or nil
+    fill(buf, norm and diff_normalize(lines, norm) or lines,
+      { root = root, side = side, view = view, name = entry.name,
+        mangled = entry.mangled, relfile = relfile, args = args, normalize = norm })
     return buf
   end
 
@@ -818,6 +867,7 @@ function M.view_pair(kind, opts)
             vim.cmd("diffthis")
             vim.wo.foldenable = false -- show the whole function, not just hunks
           end)
+          apply_diff_hl(w) -- honor the diff_highlight toggle (color vs none)
         end
       else
         vim.wo[twin].scrollbind = true
@@ -885,8 +935,12 @@ local function refresh_views(root)
       local rec = ctx.mangled and by and by[ctx.mangled]
       local loc = locals_pair(root, ctx.relfile, ctx.mangled)
       run(root, ctx.args, function(lines)
-        local header = metric_header(rec, nil, loc)
-        if header then table.insert(lines, 1, header) end
+        if ctx.normalize then -- a vDa/vDs diff pane: re-strip the noise, no header
+          lines = diff_normalize(lines, ctx.normalize)
+        else
+          local header = metric_header(rec, nil, loc)
+          if header then table.insert(lines, 1, header) end
+        end
         if vim.api.nvim_buf_is_valid(buf) then set_buf_lines(buf, lines) end
       end)
     end
@@ -1078,7 +1132,8 @@ local function save_state(root)
   local fd = io.open(state_path(root), "w")
   if not fd then return end
   fd:write(vim.json.encode({ hints = M.config.hints,
-                             build_on_save = M.config.build_on_save }))
+                             build_on_save = M.config.build_on_save,
+                             diff_highlight = M.config.diff_highlight }))
   fd:close()
 end
 
@@ -1095,6 +1150,7 @@ function M.load_state(buf)
   if ok and type(s) == "table" then
     if type(s.hints) == "boolean" then M.config.hints = s.hints end
     if type(s.build_on_save) == "boolean" then M.config.build_on_save = s.build_on_save end
+    if type(s.diff_highlight) == "boolean" then M.config.diff_highlight = s.diff_highlight end
   end
 end
 
@@ -1111,6 +1167,19 @@ function M.dispatch(arg)
     save_state(project_root(0))
     vim.notify("pdb_fetch: build on save " ..
       (M.config.build_on_save and "ON" or "off"))
+  elseif arg == "diffhl" then
+    -- flip vDa/vDs coloring and apply it live to any open diff panes
+    M.config.diff_highlight = not M.config.diff_highlight
+    save_state(project_root(0))
+    for _, w in ipairs(vim.api.nvim_list_wins()) do
+      if vim.api.nvim_win_is_valid(w) and vim.wo[w].diff
+          and vim.api.nvim_buf_get_name(
+            vim.api.nvim_win_get_buf(w)):match("^pdbfetch://") then
+        apply_diff_hl(w)
+      end
+    end
+    vim.notify("pdb_fetch: diff highlighting " ..
+      (M.config.diff_highlight and "on" or "off (aligned, no color)"))
   elseif arg == "close" then
     M.close()
   else
@@ -1145,7 +1214,7 @@ function M.complete(_, cmdline)
     end
     return {}
   end
-  return { "base", "target", "diff", "hints", "autobuild", "close" }
+  return { "base", "target", "diff", "hints", "autobuild", "diffhl", "close" }
 end
 
 function M.attach_keymaps(buf)
