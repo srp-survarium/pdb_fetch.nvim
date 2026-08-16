@@ -519,8 +519,10 @@ local function peek_pair(ctx, row, header)
     fields[vim.trim(field)] = value
     start = start + #field + 1
   end
-  local taddr = (fields["t.addr"] or ""):match("^0x%x+$")
-  local baddr = (fields["b.addr"] or ""):match("^0x%x+$")
+  -- `t.va`/`b.va` since pdb_fetch labelled its address spaces; `t.addr`/
+  -- `b.addr` before that. Accept both so the plugin and the tool can skew.
+  local taddr = (fields["t.va"] or fields["t.addr"] or ""):match("^0x%x+$")
+  local baddr = (fields["b.va"] or fields["b.addr"] or ""):match("^0x%x+$")
   if not (taddr and baddr) then return false end -- one-sided row: single peek
 
   local function fetch(side, addr, cb)
@@ -560,7 +562,9 @@ function M.follow()
   local sd_header
   if ctx.view == "structure-diff" then
     for _, l in ipairs(vim.api.nvim_buf_get_lines(0, 0, 20, false)) do
-      if l:find("|t.addr", 1, true) then sd_header = l break end
+      if l:find("|t.va", 1, true) or l:find("|t.addr", 1, true) then
+        sd_header = l break
+      end
     end
     if sd_header
         and peek_pair(ctx, vim.api.nvim_get_current_line(), sd_header) then
@@ -585,7 +589,7 @@ function M.follow()
     side = (prefix == "+") and "target" or "base"
     selector = { "--function", ctx.name, "--offset", hex }
   elseif ctx.view == "structure" then
-    selector = { "--address", hex } -- the address column, view's own side
+    selector = { "--address", hex } -- the `va` column, view's own side
   else -- rich asm: [0xNN] statement heads / instruction offsets
     selector = { "--function", ctx.name, "--offset", hex }
   end
